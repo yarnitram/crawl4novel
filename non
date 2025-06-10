@@ -1,13 +1,13 @@
 python -c "from database_sqlite import create_db_and_tables; create_db_and_tables()"
 
-python novlove_scraper.py novel-urls --sitemap-url htts://novlove.com/sitemap-0.xml
+python novlove_scraper.py novel-urls --sitemap-url https://novlove.com/sitemap-0.xml
 
 
 python novlove_scraper.py scrape-details --all
 
 
 
-
+python novlove_scraper.py genres --sitemap-url https://novlove.com/sitemap-0.xml
 
 
 
@@ -15,3 +15,6 @@ python novlove_scraper.py scrape-details --all
 
 
 python novlove_scraper.py scrape-details --novel-url https://novlove.com/novel/becoming-the-king-of-a-new-filthy-world/
+
+
+python novlove_scraper.py scrape-single --novel-url https://novlove.com/novel/becoming-the-king-of-a-new-filthy-world/

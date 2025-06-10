@@ -25,8 +25,10 @@ def get_genres_from_sitemap(sitemap_url: str):
                 if url and "https://novlove.com/nov-love-genres/" in url:
                     parsed_url = urlparse(url)
                     path_parts = parsed_url.path.split('/')
-                    if len(path_parts) > 2 and path_parts[-1]:
-                        genre_name = path_parts[-1]
+                    # Filter out empty strings and get the last non-empty part
+                    non_empty_parts = [part for part in path_parts if part]
+                    if len(non_empty_parts) > 1: # Ensure there's at least the "nov-love-genres" part and the genre itself
+                        genre_name = non_empty_parts[-1]
                         genres.add(genre_name)
         return list(genres)
     except requests.exceptions.RequestException as e:
@@ -38,21 +40,15 @@ def get_genres_from_sitemap(sitemap_url: str):
 
 def save_genres_to_db(genres: list):
     db = SessionLocal()
-    try:
-        for genre_name in genres:
-            existing_genre = db.query(Genre).filter(Genre.name == genre_name).first()
-            if not existing_genre:
-                new_genre = Genre(name=genre_name)
-                db.add(new_genre)
-                print(f"Added genre: {genre_name}")
-            else:
-                print(f"Genre already exists: {genre_name}")
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"Error saving genres to database: {e}")
-    finally:
-        db.close()
+    for genre_name in genres:
+        genre = db.query(Genre).filter(func.lower(Genre.name) == genre_name.lower()).first()
+        if not genre:
+            genre = Genre(name=genre_name)
+            db.add(genre)
+            db.commit()
+        else:
+            db.commit()
+    db.close()
 
 async def scrape_novel_details_and_chapters(novel_url: str):
     """
@@ -69,7 +65,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
             {"name": "cover_image_url", "selector": "div.book img", "type": "attribute", "attribute": "src"},
             {"name": "is_completed", "selector": "meta[property='og:novel:status']", "type": "attribute", "attribute": "content"},
             {"name": "avg_rating", "selector": "input#rateVal", "type": "attribute", "attribute": "value"},
-            {"name": "genres", "selector": "ul.info-meta li:nth-child(2) a", "type": "text", "multiple": True}
+            {"name": "genres", "selector": "ul.info.info-meta li", "type": "text"}
         ]
     }
 
@@ -118,9 +114,10 @@ async def scrape_novel_details_and_chapters(novel_url: str):
         )
 
         # Parse extracted content
-        # Parse extracted content
         extracted_novel_details = {} # Use a new variable for the parsed details
+        genres_from_html = []
         if novel_result.extracted_content:
+            print("Raw novel details extracted content:", novel_result.extracted_content[:500])  # Debug print first 500 chars
             try:
                 parsed_content = json.loads(novel_result.extracted_content)
                 if isinstance(parsed_content, list) and parsed_content:
@@ -129,6 +126,23 @@ async def scrape_novel_details_and_chapters(novel_url: str):
                     extracted_novel_details = parsed_content
             except Exception as e:
                 print(f"Error parsing novel details JSON: {e}")
+
+            # Additional genre extraction from raw HTML using BeautifulSoup
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(novel_result.html, "html.parser")
+                genre_li = None
+                for li in soup.select("ul.info.info-meta li"):
+                    h3 = li.find("h3")
+                    if h3 and h3.get_text(strip=True).lower() == "genre:":
+                        genre_li = li
+                        break
+                if genre_li:
+                    genre_links = genre_li.find_all("a")
+                    genres_from_html = [a.get_text(strip=True) for a in genre_links if a.get_text(strip=True)]
+                    print(f"Extracted genres from HTML: {genres_from_html}")
+            except Exception as e:
+                print(f"Error extracting genres from HTML: {e}")
 
         chapters = []
         if chapters_result.extracted_content:
@@ -141,79 +155,86 @@ async def scrape_novel_details_and_chapters(novel_url: str):
 
         # Save to database
         db = SessionLocal()
-        try:
-            # Find or create novel record
-            novel = db.query(Novel).filter(Novel.source_url == novel_url).first()
-            if not novel:
-                # Get or create the Website record for NovLove
-                website = db.query(Website).filter(Website.name == "NovLove").first()
-                if not website:
-                    website = Website(name="NovLove", url="https://novlove.com")
-                    db.add(website)
-                    db.commit()
-                    db.refresh(website)
-                    print(f"Added new website: {website.name}")
+        # Find or create novel record
+        novel = db.query(Novel).filter(Novel.source_url == novel_url).first()
+        if not novel:
+            # Get or create the Website record for NovLove
+            website = db.query(Website).filter(Website.name == "NovLove").first()
+            if not website:
+                website = Website(name="NovLove", url="https://novlove.com")
+                db.add(website)
+                db.commit()
+                db.refresh(website)
+                print(f"Added new website: {website.name}")
 
-                novel = Novel(
-                    title=extracted_novel_details.get("title", "Unknown"), # Use extracted_novel_details
-                    author=extracted_novel_details.get("author"),
-                    description=extracted_novel_details.get("description"),
-                    cover_image_url=extracted_novel_details.get("cover_image_url"),
-                    is_completed=extracted_novel_details.get("is_completed") == "Completed",
-                    avg_rating=float(extracted_novel_details.get("avg_rating") or 0),
-                    source_url=novel_url,
-                    source_website_id=website.id # Assign the website ID
+            novel = Novel(
+                title=extracted_novel_details.get("title", "Unknown"), # Use extracted_novel_details
+                author=extracted_novel_details.get("author"),
+                description=extracted_novel_details.get("description"),
+                cover_image_url=extracted_novel_details.get("cover_image_url"),
+                is_completed=extracted_novel_details.get("is_completed") == "Completed",
+                avg_rating=float(extracted_novel_details.get("avg_rating") or 0),
+                source_url=novel_url,
+                source_website_id=website.id # Assign the website ID
+            )
+            db.add(novel)
+            db.flush()
+        else:
+            # Update existing novel details
+            novel.title = extracted_novel_details.get("title", novel.title) # Use extracted_novel_details
+            novel.author = extracted_novel_details.get("author", novel.author)
+            novel.description = extracted_novel_details.get("description", novel.description)
+            novel.cover_image_url = extracted_novel_details.get("cover_image_url", novel.cover_image_url)
+            novel.is_completed = extracted_novel_details.get("is_completed") == "Completed"
+            novel.avg_rating = float(extracted_novel_details.get("avg_rating") or novel.avg_rating)
+
+        # Handle genres
+        # Prefer genres extracted from HTML if available, else fallback to extracted_novel_details
+        genre_names = genres_from_html
+        if not genre_names:
+            genres_str = extracted_novel_details.get("genres", "")
+            if genres_str:
+                genre_names = [g.strip() for g in genres_str.split(",") if g.strip()]
+        if genre_names:
+            print(f"Scraped genres: {', '.join(genre_names)}")  # Log the scraped genres
+            for genre_name in genre_names:
+                genre = db.query(Genre).filter(func.lower(Genre.name) == genre_name.lower()).first()
+                if not genre:
+                    genre = Genre(name=genre_name)
+                    db.add(genre)
+                    db.flush()
+                if genre not in novel.genres:
+                    novel.genres.append(genre)
+
+        # Save chapters
+        for chapter_data in chapters:
+            chapter_url = chapter_data.get("chapter_url")
+            if not chapter_url:
+                continue
+            existing_chapter = db.query(Chapter).filter(Chapter.url == chapter_url).first()
+            if not existing_chapter:
+                chapter = Chapter(
+                    novel_id=novel.id,
+                    title=chapter_data.get("chapter_title", "No Title"),
+                    url=chapter_url
                 )
-                db.add(novel)
-                db.commit()
-                db.refresh(novel)
-            else:
-                # Update existing novel details
-                novel.title = extracted_novel_details.get("title", novel.title) # Use extracted_novel_details
-                novel.author = extracted_novel_details.get("author", novel.author)
-                novel.description = extracted_novel_details.get("description", novel.description)
-                novel.cover_image_url = extracted_novel_details.get("cover_image_url", novel.cover_image_url)
-                novel.is_completed = extracted_novel_details.get("is_completed") == "Completed"
-                novel.avg_rating = float(extracted_novel_details.get("avg_rating") or novel.avg_rating)
-                db.commit()
+                db.add(chapter)
+        db.commit()  # Commit all changes (novel, chapters)
 
-            # Save chapters
-            for chapter_data in chapters:
-                chapter_url = chapter_data.get("chapter_url")
-                if not chapter_url:
-                    continue
-                existing_chapter = db.query(Chapter).filter(Chapter.url == chapter_url).first()
-                if not existing_chapter:
-                    chapter = Chapter(
-                        novel_id=novel.id,
-                        title=chapter_data.get("chapter_title", "No Title"),
-                        url=chapter_url
-                    )
-                    db.add(chapter)
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            print(f"Error saving novel or chapters to database: {e}")
-        finally:
-            db.close()
+    # Log results
+    print("Novel Details:")
+    print(extracted_novel_details)  # Use extracted_novel_details for logging
+    print("Chapters:")
+    for chapter in chapters:
+        title = chapter.get("chapter_title", "N/A")
+        url = chapter.get("chapter_url", "N/A")
+        print(f"{title}: {url}")
 
-        # Log results
-        print("Novel Details:")
-        print(extracted_novel_details) # Use extracted_novel_details for logging
-        print("Chapters:")
-        for chapter in chapters:
-            title = chapter.get("chapter_title", "N/A")
-            url = chapter.get("chapter_url", "N/A")
-            print(f"{title}: {url}")
-
-        return extracted_novel_details, chapters
+    return extracted_novel_details, chapters
 
 def scrape_genres_command(sitemap_url: str):
-    genres = get_genres_from_sitemap(sitemap_url)
-    if genres:
-        save_genres_to_db(genres)
-    else:
-        print("No genres found to save.")
+    print("Genre scraping command removed.")
+    # Function intentionally left blank as genre scraping is removed.
 
 def scrape_novel_urls_command(sitemap_url: str):
     db = SessionLocal()
