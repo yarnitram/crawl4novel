@@ -75,7 +75,8 @@ async def scrape_novel_details_and_chapters(novel_url: str):
         "baseSelector": "#tab-chapters ul.list-chapter > li",
         "fields": [
             {"name": "chapter_title", "selector": "a", "type": "text"},
-            {"name": "chapter_url", "selector": "a", "type": "attribute", "attribute": "href"}
+            {"name": "chapter_url", "selector": "a", "type": "attribute", "attribute": "href"},
+            {"name": "chapter_number", "selector": "a", "type": "text"}  # Added chapter_number extraction
         ]
     }
 
@@ -207,7 +208,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
                     novel.genres.append(genre)
 
         # Save chapters
-        for chapter_data in chapters:
+        for idx, chapter_data in enumerate(chapters, start=1):
             chapter_url = chapter_data.get("chapter_url")
             if not chapter_url:
                 continue
@@ -216,6 +217,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
                 chapter = Chapter(
                     novel_id=novel.id,
                     title=chapter_data.get("chapter_title", "No Title"),
+                    chapter_number=idx,
                     url=chapter_url
                 )
                 db.add(chapter)
