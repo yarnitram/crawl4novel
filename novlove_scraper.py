@@ -60,9 +60,9 @@ async def scrape_novel_details_and_chapters(novel_url: str):
         "baseSelector": "div.col-novel-main",
         "fields": [
             {"name": "title", "selector": "h3.title", "type": "text"},
-            {"name": "author", "selector": "span[itemprop='author'] a", "type": "text"},
+            {"name": "author", "selector": "span[itemprop='author'] meta[itemprop='name']", "type": "attribute", "attribute": "content"},
             {"name": "description", "selector": "div.desc-text", "type": "text"},
-            {"name": "cover_image_url", "selector": "div.book img", "type": "attribute", "attribute": "src"},
+            {"name": "cover_image_url", "selector": "meta[itemprop='image']", "type": "attribute", "attribute": "content"},
             {"name": "is_completed", "selector": "meta[property='og:novel:status']", "type": "attribute", "attribute": "content"},
             {"name": "avg_rating", "selector": "input#rateVal", "type": "attribute", "attribute": "value"},
             {"name": "genres", "selector": "ul.info.info-meta li", "type": "text"}
@@ -220,6 +220,10 @@ async def scrape_novel_details_and_chapters(novel_url: str):
                 )
                 db.add(chapter)
         db.commit()  # Commit all changes (novel, chapters)
+# Assign extracted author from HTML if available
+        if extracted_novel_details.get("author"):
+            novel.author = extracted_novel_details["author"]
+            db.commit()
 
     # Log results
     print("Novel Details:")
