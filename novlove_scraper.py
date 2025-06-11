@@ -2,7 +2,6 @@ import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 import argparse
-from bs4 import BeautifulSoup
 from database_sqlite import SessionLocal, Genre, create_db_and_tables, Website, Novel, Chapter, NovelInstance, NovelGenre
 from sqlalchemy import func
 import asyncio
@@ -69,16 +68,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
         ]
     }
 
-    # Define extraction schema for chapters
-    chapters_schema = {
-        "name": "Chapters",
-        "baseSelector": "#tab-chapters ul.list-chapter > li",
-        "fields": [
-            {"name": "chapter_title", "selector": "a", "type": "text"},
-            {"name": "chapter_url", "selector": "a", "type": "attribute", "attribute": "href"},
-            {"name": "chapter_number", "selector": "a", "type": "text"}  # Added chapter_number extraction
-        ]
-    }
+    # Chapter schema moved to scrape_chapter_list_and_content
 
     browser_cfg = BrowserConfig(
         headless=True,
@@ -100,19 +90,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
             config=novel_config
         )
 
-        # Scrape chapters with 5 seconds delay after page load
-        chapters_config = CrawlerRunConfig(
-            wait_for="css:body", # Waiting for the body to load, relying more on delay
-            delay_before_return_html=10, # Changed delay to 10 seconds
-            page_timeout=120000, # Keep timeout at 120 seconds
-            cache_mode=CacheMode.BYPASS,
-            extraction_strategy=JsonCssExtractionStrategy(chapters_schema),
-            verbose=True
-        )
-        chapters_result = await crawler.arun(
-            url=f"{novel_url}#tab-chapters-title", # Append the hash to the URL
-            config=chapters_config
-        )
+        # Chapter scraping moved to scrape_chapter_list_and_content
 
         # Parse extracted content
         extracted_novel_details = {} # Use a new variable for the parsed details
@@ -145,14 +123,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
             except Exception as e:
                 print(f"Error extracting genres from HTML: {e}")
 
-        chapters = []
-        if chapters_result.extracted_content:
-            try:
-                parsed_chapters = json.loads(chapters_result.extracted_content)
-                if isinstance(parsed_chapters, list):
-                    chapters = parsed_chapters
-            except Exception as e:
-                print(f"Error parsing chapters JSON: {e}")
+        chapters = []  # Chapters are scraped in scrape_chapter_list_and_content
 
         # Save to database
         db = SessionLocal()
@@ -207,21 +178,7 @@ async def scrape_novel_details_and_chapters(novel_url: str):
                 if genre not in novel.genres:
                     novel.genres.append(genre)
 
-        # Save chapters
-        for idx, chapter_data in enumerate(chapters, start=1):
-            chapter_url = chapter_data.get("chapter_url")
-            if not chapter_url:
-                continue
-            existing_chapter = db.query(Chapter).filter(Chapter.url == chapter_url).first()
-            if not existing_chapter:
-                chapter = Chapter(
-                    novel_id=novel.id,
-                    title=chapter_data.get("chapter_title", "No Title"),
-                    chapter_number=idx,
-                    url=chapter_url
-                )
-                db.add(chapter)
-        db.commit()  # Commit all changes (novel, chapters)
+        # Chapters are scraped in scrape_chapter_list_and_content
 # Assign extracted author from HTML if available
         if extracted_novel_details.get("author"):
             novel.author = extracted_novel_details["author"]
@@ -230,13 +187,9 @@ async def scrape_novel_details_and_chapters(novel_url: str):
     # Log results
     print("Novel Details:")
     print(extracted_novel_details)  # Use extracted_novel_details for logging
-    print("Chapters:")
-    for chapter in chapters:
-        title = chapter.get("chapter_title", "N/A")
-        url = chapter.get("chapter_url", "N/A")
-        print(f"{title}: {url}")
+    # Chapter logging moved to scrape_chapter_list_and_content
 
-    return extracted_novel_details, chapters
+    return extracted_novel_details
 
 def scrape_genres_command(sitemap_url: str):
     print("Genre scraping command removed.")
@@ -283,12 +236,147 @@ def scrape_novel_urls_command(sitemap_url: str):
         db.rollback()
     except ET.ParseError as e:
         print(f"Error parsing XML sitemap: {e}")
-        db.rollback()
-    except Exception as e:
-        db.rollback()
-        print(f"Error saving novel URLs to database: {e}")
-    finally:
-        db.close()
+
+async def scrape_chapter_list_and_content(novel_url: str):
+    """
+    Scrape chapter list and content from the given novel URL using crawl4ai.
+    """
+    # Define extraction schema for chapters list
+    chapters_schema = {
+        "name": "Chapters",
+        "baseSelector": "#tab-chapters ul.list-chapter > li",
+        "fields": [
+            {"name": "chapter_title", "selector": "a", "type": "text"},
+            {"name": "chapter_url", "selector": "a", "type": "attribute", "attribute": "href"},
+            {"name": "chapter_number", "selector": "a", "type": "text"}
+        ]
+    }
+
+    # Define extraction schema for chapter content
+    chapter_content_schema = {
+        "name": "ChapterContent",
+        "baseSelector": "div.chapter-content",
+        "fields": [
+            {"name": "content", "selector": "div.chapter-content", "type": "text"}
+        ]
+    }
+
+    browser_cfg = BrowserConfig(
+        headless=True,
+        verbose=True,
+        viewport_width=1280,
+        viewport_height=800
+    )
+
+    async with AsyncWebCrawler(config=browser_cfg) as crawler:
+        # Scrape chapter list
+        chapters_config = CrawlerRunConfig(
+            wait_for="css:body",
+            delay_before_return_html=10,
+            page_timeout=120000,
+            cache_mode=CacheMode.BYPASS,
+            extraction_strategy=JsonCssExtractionStrategy(chapters_schema),
+            verbose=True
+        )
+        chapters_result = await crawler.arun(
+            url=f"{novel_url}#tab-chapters-title",
+            config=chapters_config
+        )
+
+        chapters = []
+        if chapters_result.extracted_content:
+            try:
+                parsed_chapters = json.loads(chapters_result.extracted_content)
+                if isinstance(parsed_chapters, list):
+                    chapters = parsed_chapters
+            except Exception as e:
+                print(f"Error parsing chapters JSON: {e}")
+
+        db = SessionLocal()
+        novel = db.query(Novel).filter(Novel.source_url == novel_url).first()
+        if not novel:
+            print(f"Novel not found in database for URL: {novel_url}")
+            db.close()
+            return
+
+        latest_chapter_num_on_site = 0
+        new_chapters_count = 0
+
+        for chapter_data in chapters:
+            chapter_url = chapter_data.get("chapter_url")
+            chapter_title = chapter_data.get("chapter_title", "No Title")
+            chapter_number_text = chapter_data.get("chapter_number", "")
+            try:
+                chapter_number = int(''.join(filter(str.isdigit, chapter_number_text)))
+            except:
+                chapter_number = None
+
+            if chapter_number is None:
+                print(f"Skipping chapter with invalid number: {chapter_title}")
+                continue
+
+            if chapter_number > latest_chapter_num_on_site:
+                latest_chapter_num_on_site = chapter_number
+
+            existing_chapter = db.query(Chapter).filter(Chapter.url == chapter_url).first()
+            if existing_chapter:
+                # Chapter exists, skip content scraping for now or update if needed
+                continue
+
+            # Scrape chapter content
+            chapter_content_config = CrawlerRunConfig(
+                wait_for="css:div.chapter-content",
+                delay_before_return_html=5,
+                page_timeout=60000,
+                cache_mode=CacheMode.BYPASS,
+                extraction_strategy=JsonCssExtractionStrategy(chapter_content_schema),
+                verbose=True
+            )
+            chapter_content_result = await crawler.arun(
+                url=chapter_url,
+                config=chapter_content_config
+            )
+
+            chapter_content = ""
+            if chapter_content_result.extracted_content:
+                try:
+                    parsed_content = json.loads(chapter_content_result.extracted_content)
+                    if isinstance(parsed_content, list) and parsed_content:
+                        chapter_content = parsed_content[0].get("content", "")
+                    elif isinstance(parsed_content, dict):
+                        chapter_content = parsed_content.get("content", "")
+                except Exception as e:
+                    print(f"Error parsing chapter content JSON: {e}")
+
+            new_chapter = Chapter(
+                novel_id=novel.id,
+                title=chapter_title,
+                chapter_number=chapter_number,
+                url=chapter_url,
+                content=chapter_content
+            )
+            db.add(new_chapter)
+            new_chapters_count += 1
+            print(f"Added new chapter: {chapter_title} (Chapter {chapter_number})")
+    
+            try:
+                # Update novel's latest and current chapter numbers
+                novel.latest_chapter_number = latest_chapter_num_on_site
+                max_chapter_in_db = db.query(func.max(Chapter.chapter_number)).filter(Chapter.novel_id == novel.id).scalar() or 0
+                novel.current_last_chapter_number = max_chapter_in_db
+    
+                db.commit()
+                db.close()
+    
+                print(f"Scraping complete for novel: {novel.title}")
+                print(f"New chapters added: {new_chapters_count}")
+                print(f"Latest chapter number on site: {latest_chapter_num_on_site}")
+                print(f"Current last chapter number in DB: {max_chapter_in_db}")
+            except Exception as e:
+                db.rollback()
+                print(f"Error saving novel URLs to database: {e}")
+            finally:
+                db.close()
 
 def main():
     create_db_and_tables()
@@ -309,6 +397,8 @@ def main():
     scrape_details_parser = subparsers.add_parser("scrape-details", help="Scrape full novel details from stored URLs")
     scrape_details_parser.add_argument("--novel-url", required=False, help="URL of the novel to scrape details and chapters")
     scrape_details_parser.add_argument("--all", action="store_true", help="Scrape details for all novels in the database")
+    scrape_details_parser.add_argument("--start-id", type=int, required=False, help="Start novel ID to scrape")
+    scrape_details_parser.add_argument("--end-id", type=int, required=False, help="End novel ID to scrape (inclusive)")
 
     args = parser.parse_args()
 
@@ -328,11 +418,36 @@ def main():
                     return
                 for novel in novels:
                     print(f"Scraping details for novel: {novel.source_url}")
-                    asyncio.run(scrape_novel_details_and_chapters(novel.source_url))
+                    try:
+                        asyncio.run(scrape_novel_details_and_chapters(novel.source_url))
+                    except Exception as e:
+                        print(f"Error scraping novel {novel.source_url}: {e}")
+                        print("Skipping to next novel.")
+            finally:
+                db.close()
+        elif args.start_id is not None:
+            db = SessionLocal()
+            try:
+                query = db.query(Novel)
+                if args.end_id is not None:
+                    query = query.filter(Novel.id >= args.start_id, Novel.id <= args.end_id)
+                else:
+                    query = query.filter(Novel.id >= args.start_id)
+                novels = query.order_by(Novel.id).all()
+                if not novels:
+                    print(f"No novels found in the database with IDs starting from {args.start_id}.")
+                    return
+                for novel in novels:
+                    print(f"Scraping details for novel ID {novel.id}: {novel.source_url}")
+                    try:
+                        asyncio.run(scrape_novel_details_and_chapters(novel.source_url))
+                    except Exception as e:
+                        print(f"Error scraping novel ID {novel.id} ({novel.source_url}): {e}")
+                        print("Skipping to next novel.")
             finally:
                 db.close()
         else:
-            print("Please provide either --novel-url or --all to scrape details and chapters.")
+            print("Please provide either --novel-url, --all, or --start-id to scrape details and chapters.")
 
 if __name__ == "__main__":
     main()

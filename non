@@ -18,3 +18,16 @@ python novlove_scraper.py scrape-details --novel-url https://novlove.com/novel/b
 
 
 python novlove_scraper.py scrape-single --novel-url https://novlove.com/novel/becoming-the-king-of-a-new-filthy-world/
+
+
+
+python novlove_scraper.py scrape-details --start-id 4000 --end-id 4936
+
+python novlove_scraper.py scrape-details --start-id 4000
+
+
+python novlove_scraper.py scrape-details --start-id 1 --end-id 1000
+python novlove_scraper.py scrape-details --start-id 1000 --end-id 2000
+python novlove_scraper.py scrape-details --start-id 2000 --end-id 3000
+python novlove_scraper.py scrape-details --start-id 3000 --end-id 4000
+python novlove_scraper.py scrape-details --start-id 4000
