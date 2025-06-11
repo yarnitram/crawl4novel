@@ -66,6 +66,9 @@ class Novel(Base):
     source_url = Column(String, unique=True, index=True) # URL of the novel's main page on the source website
     last_scraped_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    latest_chapter_number = Column(Integer, default=0)
+    current_last_chapter_number = Column(Integer, default=0)
+
     # Relationships to Novel Instances and Chapters (one-to-many)
     novel_instances = relationship("NovelInstance", back_populates="novel")
     chapters = relationship("Chapter", back_populates="novel")
